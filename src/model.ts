@@ -5,6 +5,7 @@ export type Category = {
   parentId: string | null;
   name: string;
   order: number;
+  favorite: boolean;
   deletedAt: string | null;
 };
 export type Note = {
@@ -13,6 +14,8 @@ export type Note = {
   title: string;
   document: JSONContent;
   plainText: string;
+  sortOrder: number;
+  favorite: boolean;
   revision: number;
   createdAt: string;
   updatedAt: string;
@@ -34,18 +37,28 @@ export type Connection = {
   baseUrl: string;
   model: string;
 };
-export const PROVIDERS: { id: ProviderType; label: string; baseUrl: string }[] = [
-  { id: "openai", label: "ChatGPT (OpenAI)", baseUrl: "https://api.openai.com/v1" },
-  { id: "anthropic", label: "Claude (Anthropic)", baseUrl: "https://api.anthropic.com" },
-  { id: "deepseek", label: "DeepSeek", baseUrl: "https://api.deepseek.com" },
-  { id: "local", label: "Local", baseUrl: "http://localhost:11434/v1" },
-];
+export const PROVIDERS: { id: ProviderType; label: string; baseUrl: string }[] =
+  [
+    {
+      id: "openai",
+      label: "ChatGPT (OpenAI)",
+      baseUrl: "https://api.openai.com/v1",
+    },
+    {
+      id: "anthropic",
+      label: "Claude (Anthropic)",
+      baseUrl: "https://api.anthropic.com",
+    },
+    { id: "deepseek", label: "DeepSeek", baseUrl: "https://api.deepseek.com" },
+    { id: "local", label: "Local", baseUrl: "http://localhost:11434/v1" },
+  ];
 export type Preferences = {
   fontSize: number;
   reducedMotion: boolean;
   theme: "eva" | "quiet";
   connection: Connection;
   lastBackup?: string;
+  noteSort: "recent" | "custom";
 };
 export const defaults: Preferences = {
   fontSize: 17,
@@ -57,6 +70,7 @@ export const defaults: Preferences = {
     baseUrl: PROVIDERS[0].baseUrl,
     model: "",
   },
+  noteSort: "recent",
 };
 export const uid = () => crypto.randomUUID();
 export const now = () => new Date().toISOString();

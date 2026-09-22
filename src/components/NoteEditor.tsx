@@ -27,6 +27,8 @@ import {
   ChevronLeft,
   Quote,
   Minus,
+  QrCode,
+  ScanText,
 } from "lucide-react";
 import {
   type Note,
@@ -43,7 +45,8 @@ import { fetchNote, saveNote } from "../db";
 import { uploadImage } from "../assets";
 import { documentExtensions } from "../editor/schema";
 import { type Scope, captureScope, signature } from "../editor/scope";
-import { summarize } from "../ai";
+import { summarize, ocrImage } from "../ai";
+import { validateImageFile, decodeQRFromFile, fileToDataUrl } from "../scan";
 import { download, exportMarkdown } from "../backup";
 import { Modal } from "./Modal";
 import { ownedNoteLocks } from "../locks";
@@ -94,7 +97,11 @@ export function NoteEditor({
     [linkOpen, setLinkOpen] = useState(false),
     [linkValue, setLinkValue] = useState(""),
     [confirmDelete, setConfirmDelete] = useState(false),
-    [slash, setSlash] = useState(false);
+    [slash, setSlash] = useState(false),
+    [scanMode, setScanMode] = useState<"qr" | "ocr" | null>(null),
+    [scanBusy, setScanBusy] = useState(false),
+    [scanError, setScanError] = useState(""),
+    [scanResult, setScanResult] = useState("");
   const draft = useRef(note),
     dirty = useRef(false),
     generation = useRef(0),
@@ -107,6 +114,7 @@ export function NoteEditor({
     scopeRef = useRef<Scope | null>(null),
     request = useRef<AbortController | null>(null),
     fileRef = useRef<HTMLInputElement>(null),
+    scanFileRef = useRef<HTMLInputElement>(null),
     editorRef = useRef<ReturnType<typeof useEditor>>(null),
     generationAI = useRef(0);
   const callbacks = useRef({ onError, onSaveStatus });
@@ -211,6 +219,84 @@ export function NoteEditor({
     } catch (e) {
       onError(e instanceof Error ? e.message : "เพิ่มภาพไม่สำเร็จ");
     }
+  }
+  function closeScan() {
+    setScanMode(null);
+    setScanResult("");
+    setScanError("");
+    setScanBusy(false);
+  }
+  async function handleScanFile(file: File) {
+    setScanBusy(true);
+    setScanError("");
+    try {
+      validateImageFile(file);
+      if (scanMode === "qr") {
+        const url = await decodeQRFromFile(file);
+        if (!url) throw new Error("ไม่พบ QR code ในรูปภาพนี้");
+        if (!safeUrl(url))
+          throw new Error(
+            "ลิงก์ใน QR ไม่ปลอดภัย รองรับเฉพาะ http, https, mailto",
+          );
+        setScanResult(url);
+      } else {
+        if (!preferences.connection.baseUrl)
+          throw new Error("กรุณาตั้งค่า AI connection ก่อนใช้ OCR");
+        const dataUrl = await fileToDataUrl(file);
+        const text = await ocrImage(
+          preferences.connection,
+          apiKey,
+          dataUrl,
+          file.type,
+          new AbortController().signal,
+        );
+        if (!text) throw new Error("ไม่พบตัวอักษรในรูปภาพนี้");
+        setScanResult(text);
+      }
+    } catch (e) {
+      setScanError(e instanceof Error ? e.message : "ประมวลผลรูปภาพไม่สำเร็จ");
+    } finally {
+      setScanBusy(false);
+    }
+  }
+  function insertScanResult() {
+    const current = editorRef.current;
+    if (!current || !writableRef.current || !scanResult) return;
+    const pos = Math.min(
+      current.state.selection.to,
+      current.state.doc.content.size,
+    );
+    if (scanMode === "qr")
+      current
+        .chain()
+        .focus()
+        .insertContentAt(pos, {
+          type: "text",
+          text: scanResult,
+          marks: [
+            {
+              type: "link",
+              attrs: {
+                href: scanResult,
+                target: "_blank",
+                rel: "noopener noreferrer",
+              },
+            },
+          ],
+        })
+        .run();
+    else {
+      const paragraphs = scanResult
+        .split(/\n+/)
+        .filter(Boolean)
+        .map((text) => ({
+          type: "paragraph",
+          attrs: { blockId: uid() },
+          content: [{ type: "text", text }],
+        }));
+      current.chain().focus().insertContentAt(pos, paragraphs).run();
+    }
+    closeScan();
   }
   const editor = useEditor({
     extensions: [
@@ -461,8 +547,10 @@ export function NoteEditor({
         alive.current &&
         ticket === generationAI.current &&
         !controller.signal.aborted
-      )
-        { setResult(text); setResultModel(preferences.connection.model); }
+      ) {
+        setResult(text);
+        setResultModel(preferences.connection.model);
+      }
     } catch (e) {
       if (alive.current && ticket === generationAI.current)
         setAiError(e instanceof Error ? e.message : "สร้างสรุปไม่สำเร็จ");
@@ -763,6 +851,24 @@ export function NoteEditor({
           >
             <ImagePlus size={18} />
           </button>
+          <button
+            className="icon-button"
+            aria-label="สแกน QR Code"
+            title="สแกน QR Code เพื่อแทรกลิงก์"
+            disabled={!writable}
+            onClick={() => setScanMode("qr")}
+          >
+            <QrCode size={17} />
+          </button>
+          <button
+            className="icon-button"
+            aria-label="อ่านตัวอักษรจากรูปภาพ (OCR)"
+            title="OCR: อ่านตัวอักษรจากรูปภาพ"
+            disabled={!writable}
+            onClick={() => setScanMode("ocr")}
+          >
+            <ScanText size={17} />
+          </button>
           <span className="toolbar-separator" />
           {listTools.map((t) => (
             <button
@@ -814,6 +920,18 @@ export function NoteEditor({
             const files = Array.from(e.target.files || []);
             e.target.value = "";
             void addImages(files);
+          }}
+        />
+        <input
+          ref={scanFileRef}
+          aria-label="เลือกรูปภาพสำหรับสแกน"
+          type="file"
+          accept="image/png,image/jpeg,image/webp,image/gif"
+          hidden
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            e.target.value = "";
+            if (file) void handleScanFile(file);
           }}
         />
         <div className="document-scroll">
@@ -1083,7 +1201,7 @@ export function NoteEditor({
                 <div className="section-kicker">SUMMARY PREVIEW</div>
                 <div className="result-text">{result}</div>
                 <small className="muted">
-                {resultModel} · ตรวจทานก่อนนำไปใช้
+                  {resultModel} · ตรวจทานก่อนนำไปใช้
                 </small>
                 <button
                   className="primary full-width"
@@ -1189,6 +1307,94 @@ export function NoteEditor({
               </button>
             </div>
           </form>
+        </Modal>
+      )}
+      {scanMode && (
+        <Modal
+          title={
+            scanMode === "qr" ? "สแกน QR Code" : "อ่านตัวอักษรจากรูปภาพ (OCR)"
+          }
+          onClose={closeScan}
+        >
+          <div className="settings-body">
+            {scanMode === "ocr" && !preferences.connection.baseUrl ? (
+              <div className="notice column">
+                เชื่อมต่อ API เพื่อเริ่มใช้ AI
+                <button type="button" onClick={onSettings}>
+                  ตั้งค่า AI connection
+                </button>
+              </div>
+            ) : !scanResult ? (
+              <div
+                className="scan-drop"
+                tabIndex={0}
+                onPaste={(e) => {
+                  const file = e.clipboardData?.files?.[0];
+                  if (file) void handleScanFile(file);
+                }}
+              >
+                <p className="muted small">
+                  {scanMode === "qr"
+                    ? "วางรูปภาพที่มี QR Code (Ctrl/⌘+V) หรือ"
+                    : "วางรูปภาพที่มีตัวอักษร (Ctrl/⌘+V) หรือ"}
+                </p>
+                <button
+                  type="button"
+                  disabled={scanBusy}
+                  onClick={() => scanFileRef.current?.click()}
+                >
+                  เลือกไฟล์รูปภาพ
+                </button>
+                {scanBusy && <p role="status">กำลังประมวลผล…</p>}
+              </div>
+            ) : (
+              <div className="ai-result">
+                <div className="section-kicker">
+                  {scanMode === "qr" ? "LINK PREVIEW" : "TEXT PREVIEW"}
+                </div>
+                {scanMode === "ocr" ? (
+                  <textarea
+                    rows={6}
+                    value={scanResult}
+                    onChange={(e) => setScanResult(e.target.value)}
+                  />
+                ) : (
+                  <div className="result-text">{scanResult}</div>
+                )}
+              </div>
+            )}
+            {scanError && (
+              <p role="alert" className="error">
+                {scanError}
+              </p>
+            )}
+          </div>
+          {scanResult && (
+            <div className="modal-footer">
+              <button
+                type="button"
+                onClick={() =>
+                  navigator.clipboard
+                    .writeText(scanResult)
+                    .catch(() =>
+                      setScanError(
+                        "คัดลอกไม่ได้ กรุณาเลือกข้อความแล้วคัดลอกเอง",
+                      ),
+                    )
+                }
+              >
+                <Copy size={15} />
+                คัดลอก
+              </button>
+              <button
+                className="primary"
+                disabled={!writable}
+                onClick={insertScanResult}
+              >
+                {scanMode === "qr" ? "แทรกลิงก์" : "แทรกในโน้ต"}
+              </button>
+            </div>
+          )}
         </Modal>
       )}
       {confirmDelete && (

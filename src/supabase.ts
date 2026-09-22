@@ -31,9 +31,10 @@ export async function currentUserId(): Promise<string> {
 
 // Set by electron/preload.cjs when running inside the desktop app.
 type Desktop = { callbackUrl: string; openExternal: (url: string) => void };
-export const desktop: Desktop | undefined = (
-  window as unknown as { topNoteDesktop?: Desktop }
-).topNoteDesktop;
+export const desktop: Desktop | undefined =
+  typeof window === "undefined"
+    ? undefined
+    : (window as unknown as { topNoteDesktop?: Desktop }).topNoteDesktop;
 
 export async function signInWithGoogle() {
   const { data, error } = await supabase.auth.signInWithOAuth({

@@ -4,7 +4,7 @@
 
 ## ตั้งค่า Supabase และ Google login (ทำครั้งเดียว)
 
-1. **สร้างตาราง**: เปิด Supabase → SQL Editor แล้วรันไฟล์ [supabase/migrations/0001_init.sql](supabase/migrations/0001_init.sql) ทั้งไฟล์ สร้างตาราง `categories`, `notes`, `assets`, `preferences`, ฟังก์ชันสำหรับลบ/กู้คืนหมวดหมู่, Storage bucket ส่วนตัว `note-assets` และ Row Level Security ที่ให้แต่ละบัญชีเห็นเฉพาะข้อมูลของตัวเอง
+1. **สร้างตาราง**: เปิด Supabase → SQL Editor แล้วรันไฟล์ [supabase/migrations/0001_init.sql](supabase/migrations/0001_init.sql), [0002_project_planning.sql](supabase/migrations/0002_project_planning.sql) และ [0003_reorder_and_favorites.sql](supabase/migrations/0003_reorder_and_favorites.sql) ทีละไฟล์ตามลำดับ สร้างตาราง `categories`, `notes`, `assets`, `preferences`, `projects`, `tasks`, `task_dependencies`, `project_members`, ฟังก์ชันสำหรับลบ/กู้คืน, คอลัมน์ลำดับ/รายการโปรด, Storage bucket ส่วนตัว `note-assets` และ Row Level Security ที่ให้แต่ละบัญชีเห็นเฉพาะข้อมูลของตัวเอง
 2. **เปิด Google provider**: Google Cloud Console → APIs & Services → Credentials → สร้าง *OAuth client ID* (Web application) แล้วใส่ Authorized redirect URI เป็น `https://<project-ref>.supabase.co/auth/v1/callback` จากนั้นนำ Client ID/Secret ไปกรอกที่ Supabase → Authentication → Sign In / Providers → Google แล้วเปิดใช้งาน
 3. **ตั้ง Redirect URLs**: Supabase → Authentication → URL Configuration ใส่ Site URL และเพิ่ม Redirect URLs ของทุก origin ที่ใช้ เช่น `http://127.0.0.1:5173/`, `http://127.0.0.1:4173/`, URL ที่ deploy จริง และสำหรับแอปเดสก์ท็อป `http://127.0.0.1:47831/auth/callback`
 4. **ใส่คีย์ใน `.env`** (คัดลอกจาก [.env.example](.env.example)): `VITE_SUPABASE_URL` และ `VITE_SUPABASE_PUBLISHABLE_KEY` (ชื่อ `NEXT_PUBLIC_*` ก็อ่านได้) ใช้เฉพาะ publishable/anon key ห้ามใส่ secret หรือ `service_role` ค่าใน `.env` ถูกฝังในไฟล์ที่ build ออกมา ความปลอดภัยของข้อมูลมาจาก RLS ไม่ใช่การซ่อน key
@@ -52,9 +52,13 @@ npm.cmd run dist:win     # สร้างตัวติดตั้ง release
 - อัปโหลด ลากวาง หรือ paste รูป PNG, JPEG, WebP, GIF สูงสุด 10 MB ต่อภาพ
 - คลิกรูปเพื่อปรับความกว้าง ตำแหน่ง คำบรรยาย และ alt text
 - หมวดหมู่ซ้อนกัน เปลี่ยนชื่อ ย้ายหมวด/โน้ต รวมหมวดย่อย และค้นหาชื่อ/ข้อความ
+- ลากจัดลำดับหมวดหมู่ โน้ต (เมื่อเปิด "เรียงลำดับเอง") โปรเจกต์ และงาน พร้อมปักหมุดรายการโปรดได้ทุกประเภท
 - ถังขยะ กู้คืนโน้ต/หมวดหมู่ และยืนยันก่อนลบโน้ตถาวร
+- **วางแผนโปรเจกต์**: สร้างโปรเจกต์ แบ่งงาน/งานย่อย/เหตุการณ์สำคัญ กำหนด dependency แบบ Finish-to-Start ติดตามความคืบหน้า และดูภาพรวมผ่าน 4 มุมมอง (ภาพรวม, รายการงาน, Kanban, Gantt Chart) ที่ใช้ข้อมูลชุดเดียวกัน
 - เข้าสู่ระบบด้วย Google ผ่าน Supabase Auth และ autosave ขึ้น Supabase (Postgres) พร้อม revision check ป้องกันการเขียนทับข้ามอุปกรณ์ และ Web Locks สำหรับสิทธิ์แก้ไขโน้ตระหว่างแท็บในเครื่องเดียวกัน
 - AI สรุปข้อความที่เลือก บล็อกปัจจุบัน หรือหัวข้อและเนื้อหาภายใต้หัวข้อนั้น
+- สแกน QR Code จากรูปภาพ (วางหรืออัปโหลด) แล้วแทรกเป็นลิงก์ในโน้ตทันที
+- OCR อ่านตัวอักษรจากรูปภาพด้วย AI connection เดียวกับที่ใช้สรุป แล้วแทรกข้อความหรือคัดลอกไปใช้งานได้
 - Preview ก่อนแทรก/แทนที่, Undo หนึ่งครั้ง, ตรวจต้นฉบับที่เปลี่ยน และยกเลิกคำขอได้
 - ZIP backup/import รวมภาพ พร้อมสร้าง ID ใหม่และนำเข้าเป็นหมวดใหม่
 - Export Markdown พร้อมภาพเป็น ZIP
@@ -124,8 +128,10 @@ src/
   assets.ts                 อัปโหลด/ดาวน์โหลด/ลบรูปใน Supabase Storage
   legacy.ts                 อ่าน IndexedDB รุ่นเก่าและย้ายขึ้นบัญชี
   model.ts                  ชนิดข้อมูลและ utility
+  ordering.ts               คำนวณลำดับสำหรับลากจัดเรียง (gap-based, resequence อัตโนมัติ)
   ai.ts                     API adapter, timeout และข้อผิดพลาด
   backup.ts                 ZIP backup/import และ Markdown export
+  planner/                  วางแผนโปรเจกต์: Planner.tsx, model.ts, db.ts, มุมมอง Overview/Task List/Kanban/Gantt
   editor/
     extensions.tsx          Local image, summary block และ block IDs
     schema.ts               Editor schema ที่ใช้ร่วมกับ import validation

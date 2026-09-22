@@ -49,7 +49,11 @@ vi.mock("../../src/supabase", async (importOriginal) => ({
 import {
   saveNote,
   patchNote,
+  reorderNote,
+  toggleNoteFavorite,
   moveCategory,
+  reorderCategory,
+  toggleCategoryFavorite,
   deleteCategory,
   permanentlyDeleteNote,
   toSummary,
@@ -66,6 +70,8 @@ const note = (over: Partial<Note> = {}): Note => ({
   title: "ภาษาไทย",
   document: { type: "doc", content: [{ type: "paragraph" }] },
   plainText: "",
+  sortOrder: 0,
+  favorite: false,
   revision: 0,
   createdAt: "2026-01-01T00:00:00.000Z",
   updatedAt: "2026-01-01T00:00:00.000Z",
@@ -126,6 +132,8 @@ describe("cloud persistence", () => {
           category_id: null,
           title: "t",
           plain_text: "p",
+          sort_order: 0,
+          is_favorite: false,
           revision: 4,
           created_at: "2026-01-01T00:00:00Z",
           updated_at: "2026-01-02T00:00:00Z",
@@ -142,6 +150,80 @@ describe("cloud persistence", () => {
     >;
     expect(update).toHaveProperty("deleted_at", null);
     expect(update).not.toHaveProperty("document");
+  });
+  it("reorderNote persists a drag-to-reorder drop under the same revision guard", async () => {
+    queue = [{ data: null, error: null }]; // stale revision
+    await expect(reorderNote("n1", 500, 3)).rejects.toThrow("อีกหน้าต่าง");
+    const update = calls.find((c) => c.method === "update")!.args[0] as Record<
+      string,
+      unknown
+    >;
+    expect(update).toMatchObject({ sort_order: 500, revision: 4 });
+  });
+  it("toggleNoteFavorite flips is_favorite under the same revision guard", async () => {
+    queue = [
+      {
+        data: {
+          id: "n1",
+          category_id: null,
+          title: "t",
+          plain_text: "",
+          sort_order: 0,
+          is_favorite: true,
+          revision: 1,
+          created_at: "2026-01-01T00:00:00Z",
+          updated_at: "2026-01-01T00:00:00Z",
+          deleted_at: null,
+        },
+        error: null,
+      },
+    ];
+    const summary = await toggleNoteFavorite("n1", true, 0);
+    expect(summary.favorite).toBe(true);
+    const update = calls.find((c) => c.method === "update")!.args[0] as Record<
+      string,
+      unknown
+    >;
+    expect(update).toMatchObject({ is_favorite: true });
+  });
+  it("reorderCategory writes sort_order without a revision guard", async () => {
+    setStore({
+      categories: [
+        {
+          id: "a",
+          parentId: null,
+          name: "A",
+          order: 0,
+          favorite: false,
+          deletedAt: null,
+        },
+      ],
+    });
+    queue = [{ data: null, error: null }];
+    await reorderCategory("a", 750);
+    const update = calls.find((c) => c.method === "update")!.args[0] as Record<
+      string,
+      unknown
+    >;
+    expect(update).toEqual({ sort_order: 750 });
+    expect(getStore().categories[0].order).toBe(750);
+  });
+  it("toggleCategoryFavorite writes is_favorite without a revision guard", async () => {
+    setStore({
+      categories: [
+        {
+          id: "a",
+          parentId: null,
+          name: "A",
+          order: 0,
+          favorite: false,
+          deletedAt: null,
+        },
+      ],
+    });
+    queue = [{ data: null, error: null }];
+    await toggleCategoryFavorite("a", true);
+    expect(getStore().categories[0].favorite).toBe(true);
   });
   it("maps database category errors to user messages", async () => {
     rpc.mockResolvedValueOnce({ error: { message: "category_cycle" } });
@@ -163,7 +245,14 @@ describe("cloud persistence", () => {
     ];
     setStore({
       categories: [
-        { id: "a", parentId: null, name: "A", order: 0, deletedAt: null },
+        {
+          id: "a",
+          parentId: null,
+          name: "A",
+          order: 0,
+          favorite: false,
+          deletedAt: null,
+        },
       ],
     });
     await deleteCategory("a", true);
@@ -186,6 +275,8 @@ describe("cloud persistence", () => {
           category_id: null,
           title: "",
           plain_text: "",
+          sort_order: 0,
+          is_favorite: false,
           revision: 0,
           created_at: "2026-01-01T00:00:00Z",
           updated_at: "2026-01-01T00:00:00Z",
@@ -206,6 +297,8 @@ describe("row mapping", () => {
       category_id: null,
       title: "",
       plain_text: "",
+      sort_order: 0,
+      is_favorite: false,
       revision: 0,
       created_at: "2026-01-01T00:00:00+00:00",
       updated_at: "2026-01-01T00:00:00.45+00:00",
@@ -230,9 +323,17 @@ describe("row mapping", () => {
         parent_id: "p",
         name: "N",
         sort_order: 5,
+        is_favorite: true,
         deleted_at: null,
       }),
-    ).toEqual({ id: "c", parentId: "p", name: "N", order: 5, deletedAt: null });
+    ).toEqual({
+      id: "c",
+      parentId: "p",
+      name: "N",
+      order: 5,
+      favorite: true,
+      deletedAt: null,
+    });
   });
 });
 

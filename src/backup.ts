@@ -221,6 +221,7 @@ export async function importBackup(file: Blob) {
     name: `นำเข้า ${new Date().toLocaleDateString("th-TH")}`,
     parentId: null,
     order: Date.now(),
+    favorite: false,
     deletedAt: null,
   };
   const categories: Category[] = data.categories.map((c: Category) => {
@@ -243,6 +244,7 @@ export async function importBackup(file: Blob) {
       name: c.name,
       parentId: c.parentId ? ids.get(c.parentId)! : root.id,
       order: Number(c.order) || 0,
+      favorite: Boolean(c.favorite),
       deletedAt: c.deletedAt ? now() : null,
     };
   });
@@ -313,6 +315,8 @@ export async function importBackup(file: Blob) {
       title: n.title,
       document: doc,
       plainText: textOf(doc),
+      sortOrder: Number(n.sortOrder) || Date.now(),
+      favorite: Boolean(n.favorite),
       revision: 0,
       createdAt: now(),
       updatedAt: now(),

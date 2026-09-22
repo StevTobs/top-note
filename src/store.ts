@@ -5,6 +5,12 @@ import {
   type Preferences,
   defaults,
 } from "./model";
+import type {
+  Project,
+  Task,
+  TaskDependency,
+  ProjectMember,
+} from "./planner/model";
 
 // In-memory mirror of the signed-in user's Supabase data. Supabase is the source of
 // truth; db.ts writes there first and only then updates this cache.
@@ -13,12 +19,22 @@ export type Snapshot = {
   notes: NoteSummary[];
   categories: Category[];
   preferences: Preferences;
+  plannerLoaded: boolean;
+  projects: Project[];
+  tasks: Task[];
+  dependencies: TaskDependency[];
+  members: ProjectMember[];
 };
 const empty = (): Snapshot => ({
   loaded: false,
   notes: [],
   categories: [],
   preferences: defaults,
+  plannerLoaded: false,
+  projects: [],
+  tasks: [],
+  dependencies: [],
+  members: [],
 });
 let snapshot: Snapshot = empty();
 const listeners = new Set<() => void>();
@@ -40,6 +56,24 @@ export function upsertSummary(summary: NoteSummary) {
 }
 export function removeSummary(id: string) {
   setStore({ notes: snapshot.notes.filter((n) => n.id !== id) });
+}
+export function upsertProject(project: Project) {
+  const projects = snapshot.projects.some((p) => p.id === project.id)
+    ? snapshot.projects.map((p) => (p.id === project.id ? project : p))
+    : [...snapshot.projects, project];
+  setStore({ projects });
+}
+export function removeProject(id: string) {
+  setStore({ projects: snapshot.projects.filter((p) => p.id !== id) });
+}
+export function upsertTask(task: Task) {
+  const tasks = snapshot.tasks.some((t) => t.id === task.id)
+    ? snapshot.tasks.map((t) => (t.id === task.id ? task : t))
+    : [...snapshot.tasks, task];
+  setStore({ tasks });
+}
+export function removeTask(id: string) {
+  setStore({ tasks: snapshot.tasks.filter((t) => t.id !== id) });
 }
 export function useStore(): Snapshot {
   return useSyncExternalStore(

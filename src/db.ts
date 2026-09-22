@@ -24,6 +24,7 @@ type CategoryRow = {
   parent_id: string | null;
   name: string;
   sort_order: number;
+  is_favorite: boolean;
   deleted_at: string | null;
 };
 type SummaryRow = {
@@ -31,6 +32,8 @@ type SummaryRow = {
   category_id: string | null;
   title: string;
   plain_text: string;
+  sort_order: number;
+  is_favorite: boolean;
   revision: number;
   created_at: string;
   updated_at: string;
@@ -38,9 +41,10 @@ type SummaryRow = {
 };
 type NoteRow = SummaryRow & { document: JSONContent };
 
-const CATEGORY_COLUMNS = "id, parent_id, name, sort_order, deleted_at";
+const CATEGORY_COLUMNS =
+  "id, parent_id, name, sort_order, is_favorite, deleted_at";
 const SUMMARY_COLUMNS =
-  "id, category_id, title, plain_text, revision, created_at, updated_at, deleted_at";
+  "id, category_id, title, plain_text, sort_order, is_favorite, revision, created_at, updated_at, deleted_at";
 const NOTE_COLUMNS = `${SUMMARY_COLUMNS}, document`;
 // Timestamps are normalised to toISOString(): Postgres trims trailing zeros, which would
 // otherwise break the lexical updatedAt sort the note list relies on.
@@ -51,6 +55,7 @@ export const toCategory = (r: CategoryRow): Category => ({
   parentId: r.parent_id,
   name: r.name,
   order: Number(r.sort_order),
+  favorite: r.is_favorite,
   deletedAt: iso(r.deleted_at),
 });
 export const toSummary = (r: SummaryRow): NoteSummary => ({
@@ -58,6 +63,8 @@ export const toSummary = (r: SummaryRow): NoteSummary => ({
   categoryId: r.category_id,
   title: r.title,
   plainText: r.plain_text,
+  sortOrder: Number(r.sort_order),
+  favorite: r.is_favorite,
   revision: r.revision,
   createdAt: iso(r.created_at)!,
   updatedAt: iso(r.updated_at)!,
@@ -74,6 +81,8 @@ export const noteRow = (n: Note) => ({
   document: n.document,
   plain_text: n.plainText,
   asset_ids: assetIds(n.document),
+  sort_order: Number(n.sortOrder) || 0,
+  is_favorite: n.favorite,
   revision: n.revision,
   created_at: n.createdAt,
   updated_at: n.updatedAt,
@@ -84,6 +93,7 @@ export const categoryRow = (c: Category) => ({
   parent_id: c.parentId,
   name: c.name,
   sort_order: Number(c.order) || 0,
+  is_favorite: c.favorite,
   deleted_at: c.deletedAt,
 });
 const summaryOf = (n: Note | NoteSummary): NoteSummary => ({
@@ -91,6 +101,8 @@ const summaryOf = (n: Note | NoteSummary): NoteSummary => ({
   categoryId: n.categoryId,
   title: n.title,
   plainText: n.plainText,
+  sortOrder: n.sortOrder,
+  favorite: n.favorite,
   revision: n.revision,
   createdAt: n.createdAt,
   updatedAt: n.updatedAt,
@@ -101,7 +113,7 @@ const summaryOf = (n: Note | NoteSummary): NoteSummary => ({
 
 // PostgREST caps a response at 1000 rows by default, so list queries must page.
 const PAGE = 1000;
-async function pages<T>(
+export async function pages<T>(
   query: (
     from: number,
     to: number,
@@ -321,6 +333,7 @@ export async function seedWelcome() {
     parentId: null,
     name: "Getting started",
     order: 0,
+    favorite: false,
     deletedAt: null,
   };
   const note: Note = {
@@ -329,6 +342,8 @@ export async function seedWelcome() {
     title: "A little space for big ideas",
     document,
     plainText: textOf(document),
+    sortOrder: Date.now(),
+    favorite: false,
     revision: 0,
     createdAt: now(),
     updatedAt: now(),
@@ -351,6 +366,8 @@ export async function createNote(categoryId: string | null) {
       content: [{ type: "paragraph", attrs: { blockId: uid() } }],
     },
     plainText: "",
+    sortOrder: Date.now(),
+    favorite: false,
     revision: 0,
     createdAt: now(),
     updatedAt: now(),
@@ -417,6 +434,53 @@ export async function patchNote(
   return summary;
 }
 
+/** Persists a drag-to-reorder drop; same revision guard as patchNote. */
+export async function reorderNote(
+  id: string,
+  sortOrder: number,
+  expectedRevision: number,
+) {
+  const { data, error } = await supabase
+    .from("notes")
+    .update({
+      sort_order: sortOrder,
+      revision: expectedRevision + 1,
+      updated_at: now(),
+    })
+    .eq("id", id)
+    .eq("revision", expectedRevision)
+    .select(SUMMARY_COLUMNS)
+    .maybeSingle();
+  if (error) throw fail(error, "จัดลำดับโน้ตไม่สำเร็จ");
+  if (!data) throw new Error(CONFLICT);
+  const summary = toSummary(data as SummaryRow);
+  upsertSummary(summary);
+  return summary;
+}
+
+export async function toggleNoteFavorite(
+  id: string,
+  favorite: boolean,
+  expectedRevision: number,
+) {
+  const { data, error } = await supabase
+    .from("notes")
+    .update({
+      is_favorite: favorite,
+      revision: expectedRevision + 1,
+      updated_at: now(),
+    })
+    .eq("id", id)
+    .eq("revision", expectedRevision)
+    .select(SUMMARY_COLUMNS)
+    .maybeSingle();
+  if (error) throw fail(error, "ปักหมุดโน้ตไม่สำเร็จ");
+  if (!data) throw new Error(CONFLICT);
+  const summary = toSummary(data as SummaryRow);
+  upsertSummary(summary);
+  return summary;
+}
+
 export async function permanentlyDeleteNote(id: string) {
   const { data, error } = await supabase.rpc("delete_note_permanently", {
     p_id: id,
@@ -439,6 +503,7 @@ export async function addCategory(name: string, parentId: string | null) {
     name,
     parentId,
     order: Date.now(),
+    favorite: false,
     deletedAt: null,
   };
   const { error } = await supabase
@@ -448,6 +513,34 @@ export async function addCategory(name: string, parentId: string | null) {
   setStore({ categories: [...getStore().categories, category] });
   return category;
 }
+
+/** Persists a drag-to-reorder drop among sibling categories. No revision on this table. */
+export async function reorderCategory(id: string, order: number) {
+  const { error } = await supabase
+    .from("categories")
+    .update({ sort_order: order })
+    .eq("id", id);
+  if (error) throw fail(error, "จัดลำดับหมวดหมู่ไม่สำเร็จ");
+  setStore({
+    categories: getStore().categories.map((c) =>
+      c.id === id ? { ...c, order } : c,
+    ),
+  });
+}
+
+export async function toggleCategoryFavorite(id: string, favorite: boolean) {
+  const { error } = await supabase
+    .from("categories")
+    .update({ is_favorite: favorite })
+    .eq("id", id);
+  if (error) throw fail(error, "ปักหมุดหมวดหมู่ไม่สำเร็จ");
+  setStore({
+    categories: getStore().categories.map((c) =>
+      c.id === id ? { ...c, favorite } : c,
+    ),
+  });
+}
+
 export async function moveCategory(
   id: string,
   parentId: string | null,

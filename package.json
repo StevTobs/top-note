@@ -1,7 +1,7 @@
 {
   "name": "top-note",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
@@ -26,6 +26,7 @@
     "@tiptap/starter-kit": "^3.0.0",
     "dexie": "^4.0.0",
     "dexie-react-hooks": "^4.0.0",
+    "jsqr": "^1.4.0",
     "jszip": "^3.10.1",
     "lucide-react": "^0.577.0",
     "react": "^19.2.0",

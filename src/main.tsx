@@ -6,6 +6,7 @@ import "@fontsource/noto-sans-thai/500.css";
 import "@fontsource/noto-sans-thai/600.css";
 import "@fontsource/noto-sans-thai/700.css";
 import App from "./App";
+import { announceUpdate } from "./pwaUpdate";
 import "./styles.css";
 
 class ErrorBoundary extends React.Component<
@@ -34,11 +35,16 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
     <App />
   </ErrorBoundary>,
 );
-// Prompt strategy: activate a new version only when all old app tabs close.
+// Prompt strategy: a new version installs in the background but only activates once the
+// user confirms (see pwaUpdate.ts + App.tsx's update toast) or every old tab closes.
 // The desktop app serves its own bundled files, so it must not run a caching service worker.
-if (!(window as unknown as { topNoteDesktop?: unknown }).topNoteDesktop)
-  registerSW({
+if (!(window as unknown as { topNoteDesktop?: unknown }).topNoteDesktop) {
+  const updateSW = registerSW({
+    onNeedRefresh() {
+      announceUpdate(updateSW);
+    },
     onRegisterError() {
       /* The app stays usable; shell caching can retry on next load. */
     },
   });
+}

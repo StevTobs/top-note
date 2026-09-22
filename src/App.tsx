@@ -23,18 +23,27 @@ import {
   LogOut,
   PanelLeftClose,
   PanelLeftOpen,
+  FolderKanban,
+  Star,
+  RefreshCw,
 } from "lucide-react";
 import {
   createNote,
   patchNote,
+  reorderNote,
+  toggleNoteFavorite,
   fetchNote,
   restoreCategory,
+  reorderCategory,
+  toggleCategoryFavorite,
   permanentlyDeleteNote,
   ensureAccount,
   seedWelcome,
   loadAll,
   refreshAll,
+  savePreferences,
 } from "./db";
+import { dropOrder } from "./ordering";
 import { resetStore, useStore } from "./store";
 import { clearAssetCache } from "./assets";
 import {
@@ -51,13 +60,21 @@ import { CategoryDialog } from "./components/CategoryDialog";
 import { LegacyPanel } from "./components/LegacyPanel";
 import { LoginScreen, SetupScreen } from "./components/LoginScreen";
 import { Modal } from "./components/Modal";
+import { Planner } from "./planner/Planner";
+import { useUpdateAvailable, applyUpdate } from "./pwaUpdate";
 
 type InstallEvent = Event & {
   prompt: () => Promise<void>;
   userChoice: Promise<{ outcome: string }>;
 };
 const API_KEY_STORAGE_KEY = "clever-note-api-key";
-function Workspace({ session }: { session: Session }) {
+function Workspace({
+  session,
+  onOpenPlanner,
+}: {
+  session: Session;
+  onOpenPlanner: () => void;
+}) {
   const user = session.user,
     displayName: string = user.user_metadata?.full_name || "My workspace";
   const { notes, categories, preferences, loaded } = useStore();
@@ -93,6 +110,7 @@ function Workspace({ session }: { session: Session }) {
     [online, setOnline] = useState(navigator.onLine),
     [confirmPermanent, setConfirmPermanent] = useState<string | null>(null),
     [install, setInstall] = useState<InstallEvent | null>(null),
+    [dragOverId, setDragOverId] = useState<string | null>(null),
     [busy, setBusy] = useState(false);
   const flushRef = useRef<() => Promise<void>>(async () => {}),
     searchRef = useRef<HTMLInputElement>(null);
@@ -160,7 +178,8 @@ function Workspace({ session }: { session: Session }) {
       : "normal";
   }, [preferences.theme, preferences.reducedMotion]);
   useEffect(() => {
-    if (rememberKey && apiKey) localStorage.setItem(API_KEY_STORAGE_KEY, apiKey);
+    if (rememberKey && apiKey)
+      localStorage.setItem(API_KEY_STORAGE_KEY, apiKey);
     else localStorage.removeItem(API_KEY_STORAGE_KEY);
   }, [apiKey, rememberKey]);
   const selectedNote = notes.find((n) => n.id === selected && !n.deletedAt),
@@ -186,10 +205,16 @@ function Workspace({ session }: { session: Session }) {
       cancelled = true;
     };
   }, [selectedId]);
-  const activeCategories = categories.filter((c) => !c.deletedAt),
-    trash = filter === "trash";
+  const activeCategories = categories
+      .filter((c) => !c.deletedAt)
+      .sort(
+        (a, b) => Number(b.favorite) - Number(a.favorite) || a.order - b.order,
+      ),
+    trash = filter === "trash",
+    favoritesOnly = filter === "favorites",
+    customSort = preferences.noteSort === "custom";
   const ids =
-    filter === "all" || filter === "inbox" || trash
+    filter === "all" || filter === "inbox" || trash || favoritesOnly
       ? new Set<string>()
       : includeChildren
         ? descendants(activeCategories, filter)
@@ -199,17 +224,23 @@ function Workspace({ session }: { session: Session }) {
       trash
         ? !!n.deletedAt
         : !n.deletedAt &&
-          (filter === "all" ||
-            (filter === "inbox"
-              ? !n.categoryId
-              : !!n.categoryId && ids.has(n.categoryId))),
+          (favoritesOnly
+            ? n.favorite
+            : filter === "all" ||
+              (filter === "inbox"
+                ? !n.categoryId
+                : !!n.categoryId && ids.has(n.categoryId))),
     )
     .filter((n) =>
       `${n.title}\n${n.plainText}`
         .toLocaleLowerCase()
         .includes(search.toLocaleLowerCase()),
     )
-    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    .sort((a, b) =>
+      customSort && !trash
+        ? Number(b.favorite) - Number(a.favorite) || a.sortOrder - b.sortOrder
+        : b.updatedAt.localeCompare(a.updatedAt),
+    );
   const filterName =
     filter === "all"
       ? "โน้ตทั้งหมด"
@@ -217,8 +248,10 @@ function Workspace({ session }: { session: Session }) {
         ? "Inbox"
         : trash
           ? "ถังขยะ"
-          : activeCategories.find((c) => c.id === filter)?.name ||
-            "โน้ตทั้งหมด";
+          : favoritesOnly
+            ? "รายการโปรด"
+            : activeCategories.find((c) => c.id === filter)?.name ||
+              "โน้ตทั้งหมด";
   async function run(fn: () => Promise<void>) {
     setBusy(true);
     try {
@@ -251,6 +284,40 @@ function Workspace({ session }: { session: Session }) {
     setMobilePage("list");
     if (id === "trash") setSelected(null);
   }
+  async function dropCategory(
+    parentId: string | null,
+    targetId: string | null,
+    e: React.DragEvent,
+  ) {
+    e.preventDefault();
+    const draggedId = e.dataTransfer.getData("text/plain");
+    setDragOverId(null);
+    const dragged = activeCategories.find((c) => c.id === draggedId);
+    // Reordering only, within the same parent — dragging onto a different branch is a no-op.
+    if (!dragged || draggedId === targetId || dragged.parentId !== parentId)
+      return;
+    const siblings = activeCategories.filter(
+      (c) => c.parentId === parentId && c.id !== draggedId,
+    );
+    const order = await dropOrder(siblings, targetId, reorderCategory);
+    await reorderCategory(draggedId, order);
+  }
+  async function dropNote(targetId: string | null, e: React.DragEvent) {
+    e.preventDefault();
+    const draggedId = e.dataTransfer.getData("text/plain");
+    setDragOverId(null);
+    if (!draggedId || draggedId === targetId || !customSort) return;
+    const dragged = notes.find((n) => n.id === draggedId);
+    if (!dragged) return;
+    const siblings = visible
+      .filter((n) => n.id !== draggedId)
+      .map((n) => ({ id: n.id, order: n.sortOrder }));
+    const order = await dropOrder(siblings, targetId, (id, o) => {
+      const n = notes.find((x) => x.id === id);
+      return n ? reorderNote(id, o, n.revision) : Promise.resolve();
+    });
+    await reorderNote(draggedId, order, dragged.revision);
+  }
   function categoryTree(parent: string | null, depth = 0): React.ReactNode {
     return activeCategories
       .filter((c) => c.parentId === parent)
@@ -260,8 +327,18 @@ function Workspace({ session }: { session: Session }) {
         return (
           <div key={c.id}>
             <div
-              className={`category-row ${filter === c.id ? "selected" : ""}`}
+              className={`category-row ${filter === c.id ? "selected" : ""} ${dragOverId === c.id ? "drag-over" : ""}`}
               style={{ paddingLeft: 12 + depth * 16 }}
+              draggable
+              onDragStart={(e) => e.dataTransfer.setData("text/plain", c.id)}
+              onDragOver={(e) => {
+                e.preventDefault();
+                setDragOverId(c.id);
+              }}
+              onDragLeave={() =>
+                setDragOverId((id) => (id === c.id ? null : id))
+              }
+              onDrop={(e) => void dropCategory(c.parentId, c.id, e)}
             >
               <button
                 className="tree-toggle"
@@ -297,6 +374,17 @@ function Workspace({ session }: { session: Session }) {
                   <Folder size={16} />
                 )}
                 <span>{c.name}</span>
+              </button>
+              <button
+                className={`favorite-star icon-button ${c.favorite ? "active" : ""}`}
+                aria-label={
+                  c.favorite ? `เลิกปักหมุด ${c.name}` : `ปักหมุด ${c.name}`
+                }
+                onClick={() =>
+                  void run(() => toggleCategoryFavorite(c.id, !c.favorite))
+                }
+              >
+                <Star size={14} fill={c.favorite ? "currentColor" : "none"} />
               </button>
               <button
                 className="category-more icon-button"
@@ -427,6 +515,10 @@ function Workspace({ session }: { session: Session }) {
             <Plus size={18} />
             สร้างโน้ตใหม่<small>↗</small>
           </button>
+          <button className="planner-cta" onClick={onOpenPlanner}>
+            <FolderKanban size={18} />
+            วางแผนโปรเจกต์<small>↗</small>
+          </button>
           <nav aria-label="หมวดหมู่">
             <button
               className={`nav-item ${filter === "all" ? "selected" : ""}`}
@@ -443,6 +535,16 @@ function Workspace({ session }: { session: Session }) {
               Inbox
               <span>
                 {notes.filter((n) => !n.deletedAt && !n.categoryId).length}
+              </span>
+            </button>
+            <button
+              className={`nav-item ${favoritesOnly ? "selected" : ""}`}
+              onClick={() => void run(() => chooseFilter("favorites"))}
+            >
+              <Star size={16} />
+              รายการโปรด
+              <span>
+                {notes.filter((n) => !n.deletedAt && n.favorite).length}
               </span>
             </button>
             <div className="nav-heading">
@@ -527,7 +629,7 @@ function Workspace({ session }: { session: Session }) {
             </button>
             <div className="sidebar-signature">
               <span className="tiny-square" />
-              TOP SYSTEM / 01<span>v1.0</span>
+              TOP SYSTEM / 01<span>v1.1</span>
             </div>
           </div>
         </aside>
@@ -566,8 +668,14 @@ function Workspace({ session }: { session: Session }) {
                 <PanelLeftOpen size={16} />
               </button>
             )}
-            <span>{search ? `ผลการค้นหา “${search}”` : "แก้ไขล่าสุด"}</span>
-            {!["all", "inbox", "trash"].includes(filter) && (
+            <span>
+              {search
+                ? `ผลการค้นหา “${search}”`
+                : customSort
+                  ? "ลำดับที่จัดเอง"
+                  : "แก้ไขล่าสุด"}
+            </span>
+            {!["all", "inbox", "trash"].includes(filter) && !favoritesOnly && (
               <label className="check-label">
                 <input
                   type="checkbox"
@@ -577,13 +685,61 @@ function Workspace({ session }: { session: Session }) {
                 รวมหมวดย่อย
               </label>
             )}
+            {!trash && (
+              <label className="check-label">
+                <input
+                  type="checkbox"
+                  checked={customSort}
+                  onChange={(e) =>
+                    void run(() =>
+                      savePreferences({
+                        ...preferences,
+                        noteSort: e.target.checked ? "custom" : "recent",
+                      }),
+                    )
+                  }
+                />
+                เรียงลำดับเอง
+              </label>
+            )}
           </div>
           <div className="note-list">
             {visible.map((n) => (
               <div
                 key={n.id}
-                className={`note-card ${selected === n.id && !trash ? "selected" : ""}`}
+                className={`note-card ${selected === n.id && !trash ? "selected" : ""} ${dragOverId === n.id ? "drag-over" : ""}`}
+                draggable={customSort && !trash}
+                onDragStart={(e) => e.dataTransfer.setData("text/plain", n.id)}
+                onDragOver={(e) => {
+                  if (!customSort) return;
+                  e.preventDefault();
+                  setDragOverId(n.id);
+                }}
+                onDragLeave={() =>
+                  setDragOverId((id) => (id === n.id ? null : id))
+                }
+                onDrop={(e) => void dropNote(n.id, e)}
               >
+                {!trash && (
+                  <button
+                    className={`favorite-star icon-button ${n.favorite ? "active" : ""}`}
+                    aria-label={
+                      n.favorite
+                        ? `เลิกปักหมุด ${n.title}`
+                        : `ปักหมุด ${n.title}`
+                    }
+                    onClick={() =>
+                      void run(async () => {
+                        await toggleNoteFavorite(n.id, !n.favorite, n.revision);
+                      })
+                    }
+                  >
+                    <Star
+                      size={13}
+                      fill={n.favorite ? "currentColor" : "none"}
+                    />
+                  </button>
+                )}
                 <button
                   className="note-card-main"
                   aria-label={`เปิดโน้ต ${n.title || "Untitled"}`}
@@ -750,10 +906,7 @@ function Workspace({ session }: { session: Session }) {
         />
       )}
       {legacy && (
-        <Modal
-          title="ย้ายข้อมูลเดิมขึ้นบัญชี"
-          onClose={() => setLegacy(null)}
-        >
+        <Modal title="ย้ายข้อมูลเดิมขึ้นบัญชี" onClose={() => setLegacy(null)}>
           <div className="settings-body">
             <LegacyPanel
               userId={user.id}
@@ -828,10 +981,24 @@ function readAuthError(): string {
   return message ? `เข้าสู่ระบบไม่สำเร็จ: ${message}` : "";
 }
 
+function UpdateToast() {
+  if (!useUpdateAvailable()) return null;
+  return (
+    <div className="error-toast update-toast" role="status">
+      <span>มีเวอร์ชันใหม่พร้อมใช้งาน</span>
+      <button className="primary" onClick={applyUpdate}>
+        <RefreshCw size={14} />
+        อัปเดตตอนนี้
+      </button>
+    </div>
+  );
+}
+
 export default function App() {
   const [session, setSession] = useState<Session | null>(null),
     [ready, setReady] = useState(!supabaseConfigured),
-    [notice] = useState(readAuthError);
+    [notice] = useState(readAuthError),
+    [mode, setMode] = useState<"notes" | "planner">("notes");
   useEffect(() => {
     if (!supabaseConfigured) return;
     let active = true;
@@ -855,18 +1022,37 @@ export default function App() {
     if (!userId) {
       resetStore();
       clearAssetCache();
+      setMode("notes");
     }
   }, [userId]);
-  if (!supabaseConfigured) return <SetupScreen />;
-  if (!ready)
-    return (
-      <div className="boot">
-        <div className="brand-mark">
-          T<span>▰</span>
-        </div>
-        <p>กำลังตรวจสอบการเข้าสู่ระบบ…</p>
+  const content = !supabaseConfigured ? (
+    <SetupScreen />
+  ) : !ready ? (
+    <div className="boot">
+      <div className="brand-mark">
+        T<span>▰</span>
       </div>
-    );
-  if (!session) return <LoginScreen notice={notice} />;
-  return <Workspace key={session.user.id} session={session} />;
+      <p>กำลังตรวจสอบการเข้าสู่ระบบ…</p>
+    </div>
+  ) : !session ? (
+    <LoginScreen notice={notice} />
+  ) : mode === "planner" ? (
+    <Planner
+      key={session.user.id}
+      session={session}
+      onExit={() => setMode("notes")}
+    />
+  ) : (
+    <Workspace
+      key={session.user.id}
+      session={session}
+      onOpenPlanner={() => setMode("planner")}
+    />
+  );
+  return (
+    <>
+      {content}
+      <UpdateToast />
+    </>
+  );
 }
