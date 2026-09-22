@@ -1,10 +1,17 @@
-import { useState } from "react";
-import { Pencil, UserPlus, X } from "lucide-react";
-import { addMember, removeMember } from "./db";
+import { useEffect, useState } from "react";
+import { Pencil, UserPlus, UserX, X } from "lucide-react";
+import {
+  addMember,
+  removeMember,
+  shareProject,
+  unshareProject,
+  fetchProjectShares,
+} from "./db";
 import {
   type Project,
   type Task,
   type ProjectMember,
+  type ProjectShare,
   projectProgress,
 } from "./model";
 
@@ -12,23 +19,43 @@ export function ProjectOverviewView({
   project,
   tasks,
   members,
+  isOwner,
   onEdit,
   onError,
 }: {
   project: Project;
   tasks: Task[];
   members: ProjectMember[];
+  isOwner: boolean;
   onEdit: () => void;
   onError: (message: string) => void;
 }) {
   const [memberName, setMemberName] = useState(""),
     [memberRole, setMemberRole] = useState(""),
-    [busy, setBusy] = useState(false);
+    [busy, setBusy] = useState(false),
+    [shares, setShares] = useState<ProjectShare[]>([]),
+    [inviteEmail, setInviteEmail] = useState(""),
+    [shareBusy, setShareBusy] = useState(false);
   const projectTasks = tasks.filter(
     (t) => !t.deletedAt && t.projectId === project.id,
   );
   const progress = projectProgress(projectTasks);
   const projectMembers = members.filter((m) => m.projectId === project.id);
+
+  useEffect(() => {
+    if (!isOwner) return;
+    let cancelled = false;
+    fetchProjectShares(project.id)
+      .then((s) => {
+        if (!cancelled) setShares(s);
+      })
+      .catch((e) =>
+        onError(e instanceof Error ? e.message : "โหลดรายชื่อไม่สำเร็จ"),
+      );
+    return () => {
+      cancelled = true;
+    };
+  }, [project.id, isOwner]);
 
   async function addMemberRow() {
     if (!memberName.trim()) return;
@@ -41,6 +68,31 @@ export function ProjectOverviewView({
       onError(e instanceof Error ? e.message : "เพิ่มสมาชิกไม่สำเร็จ");
     } finally {
       setBusy(false);
+    }
+  }
+  async function addCollaborator(e: React.FormEvent) {
+    e.preventDefault();
+    if (!inviteEmail.trim()) return;
+    setShareBusy(true);
+    try {
+      const share = await shareProject(project.id, inviteEmail.trim());
+      setShares((prev) => [...prev, share]);
+      setInviteEmail("");
+    } catch (err) {
+      onError(err instanceof Error ? err.message : "แชร์โปรเจกต์ไม่สำเร็จ");
+    } finally {
+      setShareBusy(false);
+    }
+  }
+  async function removeCollaborator(shareId: string) {
+    setShareBusy(true);
+    try {
+      await unshareProject(shareId);
+      setShares((prev) => prev.filter((s) => s.id !== shareId));
+    } catch (err) {
+      onError(err instanceof Error ? err.message : "ยกเลิกการแชร์ไม่สำเร็จ");
+    } finally {
+      setShareBusy(false);
     }
   }
 
@@ -155,6 +207,47 @@ export function ProjectOverviewView({
           </button>
         </div>
       </div>
+
+      {isOwner && (
+        <div className="overview-team">
+          <div className="section-kicker">ผู้ร่วมงาน (Collaborators)</div>
+          <p className="muted small">
+            เพิ่มได้เฉพาะคนที่เคยเข้าสู่ระบบ Top Note มาก่อน
+            ผู้ถูกเชิญจะแก้ไขและเพิ่มงานในโปรเจกต์นี้ได้เต็มที่
+          </p>
+          <div className="dependency-chips">
+            {shares.map((s) => (
+              <span key={s.id} className="dependency-chip">
+                {s.sharedWithEmail}
+                <button
+                  type="button"
+                  className="icon-button"
+                  aria-label={`เลิกแชร์กับ ${s.sharedWithEmail}`}
+                  disabled={shareBusy}
+                  onClick={() => void removeCollaborator(s.id)}
+                >
+                  <UserX size={12} />
+                </button>
+              </span>
+            ))}
+            {!shares.length && (
+              <small className="muted">ยังไม่ได้แชร์ให้ใคร</small>
+            )}
+          </div>
+          <form className="field-row member-add-row" onSubmit={addCollaborator}>
+            <input
+              type="email"
+              placeholder="อีเมลของผู้ที่ต้องการแชร์ให้"
+              value={inviteEmail}
+              onChange={(e) => setInviteEmail(e.target.value)}
+            />
+            <button type="submit" disabled={shareBusy || !inviteEmail.trim()}>
+              <UserPlus size={14} />
+              เพิ่ม
+            </button>
+          </form>
+        </div>
+      )}
     </div>
   );
 }

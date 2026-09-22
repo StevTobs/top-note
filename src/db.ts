@@ -6,6 +6,7 @@ import { getStore, setStore, upsertSummary, removeSummary } from "./store";
 import {
   type Note,
   type NoteSummary,
+  type NoteShare,
   type Category,
   type Asset,
   type Preferences,
@@ -29,6 +30,7 @@ type CategoryRow = {
 };
 type SummaryRow = {
   id: string;
+  user_id: string;
   category_id: string | null;
   title: string;
   plain_text: string;
@@ -40,12 +42,23 @@ type SummaryRow = {
   deleted_at: string | null;
 };
 type NoteRow = SummaryRow & { document: JSONContent };
+type NoteShareRow = {
+  id: string;
+  note_id: string;
+  owner_id: string;
+  owner_email: string;
+  shared_with_user_id: string;
+  shared_with_email: string;
+  created_at: string;
+};
 
 const CATEGORY_COLUMNS =
   "id, parent_id, name, sort_order, is_favorite, deleted_at";
 const SUMMARY_COLUMNS =
-  "id, category_id, title, plain_text, sort_order, is_favorite, revision, created_at, updated_at, deleted_at";
+  "id, user_id, category_id, title, plain_text, sort_order, is_favorite, revision, created_at, updated_at, deleted_at";
 const NOTE_COLUMNS = `${SUMMARY_COLUMNS}, document`;
+const NOTE_SHARE_COLUMNS =
+  "id, note_id, owner_id, owner_email, shared_with_user_id, shared_with_email, created_at";
 // Timestamps are normalised to toISOString(): Postgres trims trailing zeros, which would
 // otherwise break the lexical updatedAt sort the note list relies on.
 const iso = (v: string | null) => (v ? new Date(v).toISOString() : null);
@@ -60,6 +73,7 @@ export const toCategory = (r: CategoryRow): Category => ({
 });
 export const toSummary = (r: SummaryRow): NoteSummary => ({
   id: r.id,
+  ownerId: r.user_id,
   categoryId: r.category_id,
   title: r.title,
   plainText: r.plain_text,
@@ -69,6 +83,15 @@ export const toSummary = (r: SummaryRow): NoteSummary => ({
   createdAt: iso(r.created_at)!,
   updatedAt: iso(r.updated_at)!,
   deletedAt: iso(r.deleted_at),
+});
+const toNoteShare = (r: NoteShareRow): NoteShare => ({
+  id: r.id,
+  noteId: r.note_id,
+  ownerId: r.owner_id,
+  ownerEmail: r.owner_email,
+  sharedWithUserId: r.shared_with_user_id,
+  sharedWithEmail: r.shared_with_email,
+  createdAt: iso(r.created_at)!,
 });
 export const toNote = (r: NoteRow): Note => ({
   ...toSummary(r),
@@ -98,6 +121,7 @@ export const categoryRow = (c: Category) => ({
 });
 const summaryOf = (n: Note | NoteSummary): NoteSummary => ({
   id: n.id,
+  ownerId: n.ownerId,
   categoryId: n.categoryId,
   title: n.title,
   plainText: n.plainText,
@@ -207,16 +231,18 @@ export async function refreshNotes() {
 }
 /** First load after sign-in. */
 export async function loadAll() {
-  const [categories, notes, preferences] = await Promise.all([
+  const [categories, notes, preferences, mySharedNotes] = await Promise.all([
     fetchCategories(),
     fetchSummaries(),
     fetchPreferences(),
+    fetchMySharedNotes(),
   ]);
   setStore({
     loaded: true,
     categories,
     notes,
     preferences: preferences ?? defaults,
+    mySharedNotes,
   });
 }
 /** Re-sync after the tab was hidden or offline, so other devices' edits show up. */
@@ -338,6 +364,7 @@ export async function seedWelcome() {
   };
   const note: Note = {
     id: uid(),
+    ownerId: await currentUserId(),
     categoryId,
     title: "A little space for big ideas",
     document,
@@ -359,6 +386,7 @@ const CONFLICT = "โน้ตเปลี่ยนจากอีกหน้�
 export async function createNote(categoryId: string | null) {
   const note: Note = {
     id: uid(),
+    ownerId: await currentUserId(),
     categoryId,
     title: "โน้ตใหม่",
     document: {
@@ -493,6 +521,76 @@ export async function permanentlyDeleteNote(id: string) {
   // The database returned only images no other note uses. A leftover object is harmless
   // (private, unreferenced), so a Storage failure must not undo the deletion.
   await removeAssetObjects((data as string[]) ?? []).catch(() => {});
+}
+
+// ─── Sharing (edit access, only for users who have already signed in) ───────
+
+/** Resolves an email to a user id, but only for accounts that have already signed in. */
+export async function findUserIdByEmail(email: string): Promise<string | null> {
+  const { data, error } = await supabase.rpc("find_user_id_by_email", {
+    p_email: email,
+  });
+  if (error) throw fail(error, "ค้นหาผู้ใช้ไม่สำเร็จ");
+  return (data as string | null) ?? null;
+}
+
+/** All shares granted to me, for "แชร์โดย …" badges in the note list — not per-note lookups. */
+export async function fetchMySharedNotes(): Promise<NoteShare[]> {
+  const rows = await pages<NoteShareRow>(
+    (a, b) =>
+      supabase.from("note_shares").select(NOTE_SHARE_COLUMNS).range(a, b),
+    "โหลดรายการที่แชร์ไม่สำเร็จ",
+  );
+  return rows.map(toNoteShare);
+}
+
+/** Owner-side: who currently has access to this note. */
+export async function fetchNoteShares(noteId: string): Promise<NoteShare[]> {
+  const { data, error } = await supabase
+    .from("note_shares")
+    .select(NOTE_SHARE_COLUMNS)
+    .eq("note_id", noteId)
+    .order("created_at");
+  if (error) throw fail(error, "โหลดรายชื่อผู้เข้าถึงไม่สำเร็จ");
+  return (data as NoteShareRow[]).map(toNoteShare);
+}
+
+export async function shareNote(
+  noteId: string,
+  inviteeEmail: string,
+): Promise<NoteShare> {
+  const sharedWithUserId = await findUserIdByEmail(inviteeEmail);
+  if (!sharedWithUserId)
+    throw new Error("ไม่พบผู้ใช้นี้ ต้องเป็นคนที่เคยเข้าสู่ระบบมาก่อน");
+  if (sharedWithUserId === (await currentUserId()))
+    throw new Error("แชร์ให้ตัวเองไม่ได้");
+  // owner_id/owner_email/shared_with_email are never sent: owner_id defaults to auth.uid()
+  // and a server-side trigger fills both emails from auth.users, so the client can't spoof
+  // either display string (see supabase/migrations/0004_sharing.sql).
+  const row = {
+    id: uid(),
+    note_id: noteId,
+    shared_with_user_id: sharedWithUserId,
+  };
+  const { data, error } = await supabase
+    .from("note_shares")
+    .insert(row)
+    .select(NOTE_SHARE_COLUMNS)
+    .maybeSingle();
+  if (error) {
+    if (error.code === "23505") throw new Error("แชร์ให้คนนี้ไปแล้ว");
+    throw fail(error, "แชร์โน้ตไม่สำเร็จ");
+  }
+  if (!data) throw new Error("แชร์โน้ตไม่สำเร็จ");
+  return toNoteShare(data as NoteShareRow);
+}
+
+export async function unshareNote(shareId: string) {
+  const { error } = await supabase
+    .from("note_shares")
+    .delete()
+    .eq("id", shareId);
+  if (error) throw fail(error, "ยกเลิกการแชร์ไม่สำเร็จ");
 }
 
 // ─── Categories ──────────────────────────────────────────────────────────────

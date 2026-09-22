@@ -1,5 +1,5 @@
-import { fail, supabase } from "../supabase";
-import { pages } from "../db";
+import { fail, supabase, currentUserId } from "../supabase";
+import { pages, findUserIdByEmail } from "../db";
 import { uid, now } from "../model";
 import {
   getStore,
@@ -19,12 +19,14 @@ import {
   type TaskDependency,
   type DependencyType,
   type ProjectMember,
+  type ProjectShare,
 } from "./model";
 
 // ─── Row mapping (snake_case Postgres ⇄ camelCase app model) ────────────────
 
 type ProjectRow = {
   id: string;
+  user_id: string;
   name: string;
   description: string;
   start_date: string | null;
@@ -36,6 +38,15 @@ type ProjectRow = {
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
+};
+type ProjectShareRow = {
+  id: string;
+  project_id: string;
+  owner_id: string;
+  owner_email: string;
+  shared_with_user_id: string;
+  shared_with_email: string;
+  created_at: string;
 };
 type TaskRow = {
   id: string;
@@ -74,12 +85,14 @@ type MemberRow = {
 };
 
 const PROJECT_COLUMNS =
-  "id, name, description, start_date, end_date, owner, status, sort_order, is_favorite, created_at, updated_at, deleted_at";
+  "id, user_id, name, description, start_date, end_date, owner, status, sort_order, is_favorite, created_at, updated_at, deleted_at";
 const TASK_COLUMNS =
   "id, project_id, parent_task_id, kind, name, description, start_date, end_date, assignee, priority, status, progress, notes, sort_order, is_favorite, revision, created_at, updated_at, deleted_at";
 const DEPENDENCY_COLUMNS =
   "id, predecessor_task_id, successor_task_id, dependency_type, created_at";
 const MEMBER_COLUMNS = "id, project_id, name, role, created_at";
+const PROJECT_SHARE_COLUMNS =
+  "id, project_id, owner_id, owner_email, shared_with_user_id, shared_with_email, created_at";
 
 // Timestamps are normalised to toISOString() for the same reason as src/db.ts: Postgres
 // trims trailing zeros, which would otherwise break lexical sort/comparison.
@@ -87,6 +100,7 @@ const iso = (v: string | null) => (v ? new Date(v).toISOString() : null);
 
 const toProject = (r: ProjectRow): Project => ({
   id: r.id,
+  ownerId: r.user_id,
   name: r.name,
   description: r.description,
   startDate: r.start_date,
@@ -172,6 +186,15 @@ const toMember = (r: MemberRow): ProjectMember => ({
   role: r.role,
   createdAt: iso(r.created_at)!,
 });
+const toProjectShare = (r: ProjectShareRow): ProjectShare => ({
+  id: r.id,
+  projectId: r.project_id,
+  ownerId: r.owner_id,
+  ownerEmail: r.owner_email,
+  sharedWithUserId: r.shared_with_user_id,
+  sharedWithEmail: r.shared_with_email,
+  createdAt: iso(r.created_at)!,
+});
 
 // ─── Reads ───────────────────────────────────────────────────────────────────
 
@@ -241,13 +264,85 @@ export async function refreshMembers() {
 
 /** Loaded lazily the first time the user opens Planning mode, not part of note loading. */
 export async function loadPlanner() {
-  const [projects, tasks, dependencies, members] = await Promise.all([
-    fetchProjects(),
-    fetchTasks(),
-    fetchDependencies(),
-    fetchMembers(),
-  ]);
-  setStore({ plannerLoaded: true, projects, tasks, dependencies, members });
+  const [projects, tasks, dependencies, members, mySharedProjects] =
+    await Promise.all([
+      fetchProjects(),
+      fetchTasks(),
+      fetchDependencies(),
+      fetchMembers(),
+      fetchMySharedProjects(),
+    ]);
+  setStore({
+    plannerLoaded: true,
+    projects,
+    tasks,
+    dependencies,
+    members,
+    mySharedProjects,
+  });
+}
+
+// ─── Sharing (edit access, only for users who have already signed in) ───────
+
+/** All shares granted to me, for "แชร์โดย …" badges in the project list. */
+export async function fetchMySharedProjects(): Promise<ProjectShare[]> {
+  const rows = await pages<ProjectShareRow>(
+    (a, b) =>
+      supabase.from("project_shares").select(PROJECT_SHARE_COLUMNS).range(a, b),
+    "โหลดรายการที่แชร์ไม่สำเร็จ",
+  );
+  return rows.map(toProjectShare);
+}
+
+/** Owner-side: who currently has access to this project. */
+export async function fetchProjectShares(
+  projectId: string,
+): Promise<ProjectShare[]> {
+  const { data, error } = await supabase
+    .from("project_shares")
+    .select(PROJECT_SHARE_COLUMNS)
+    .eq("project_id", projectId)
+    .order("created_at");
+  if (error) throw fail(error, "โหลดรายชื่อผู้เข้าถึงไม่สำเร็จ");
+  return (data as ProjectShareRow[]).map(toProjectShare);
+}
+
+export async function shareProject(
+  projectId: string,
+  inviteeEmail: string,
+): Promise<ProjectShare> {
+  const sharedWithUserId = await findUserIdByEmail(inviteeEmail);
+  if (!sharedWithUserId)
+    throw new Error("ไม่พบผู้ใช้นี้ ต้องเป็นคนที่เคยเข้าสู่ระบบมาก่อน");
+  if (sharedWithUserId === (await currentUserId()))
+    throw new Error("แชร์ให้ตัวเองไม่ได้");
+  // owner_id/owner_email/shared_with_email are never sent: owner_id defaults to auth.uid()
+  // and a server-side trigger fills both emails from auth.users, so the client can't spoof
+  // either display string (see supabase/migrations/0004_sharing.sql).
+  const row = {
+    id: uid(),
+    project_id: projectId,
+    shared_with_user_id: sharedWithUserId,
+  };
+  const { data, error } = await supabase
+    .from("project_shares")
+    .insert(row)
+    .select(PROJECT_SHARE_COLUMNS)
+    .maybeSingle();
+  if (error) {
+    if (error.code === "23505") throw new Error("แชร์ให้คนนี้ไปแล้ว");
+    throw fail(error, "แชร์โปรเจกต์ไม่สำเร็จ");
+  }
+  if (!data) throw new Error("แชร์โปรเจกต์ไม่สำเร็จ");
+  return toProjectShare(data as ProjectShareRow);
+}
+
+export async function unshareProject(shareId: string) {
+  const { error } = await supabase
+    .from("project_shares")
+    .delete()
+    .eq("id", shareId);
+  if (error) throw fail(error, "ยกเลิกการแชร์ไม่สำเร็จ");
 }
 
 // ─── Projects ────────────────────────────────────────────────────────────────
@@ -263,6 +358,7 @@ export async function createProject(input: {
 }): Promise<Project> {
   const project: Project = {
     id: uid(),
+    ownerId: await currentUserId(),
     name: input.name,
     description: input.description ?? "",
     startDate: input.startDate ?? null,

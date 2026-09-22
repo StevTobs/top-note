@@ -10,6 +10,7 @@ export type Category = {
 };
 export type Note = {
   id: string;
+  ownerId: string;
   categoryId: string | null;
   title: string;
   document: JSONContent;
@@ -23,6 +24,16 @@ export type Note = {
 };
 /** What the note list needs; the document body is fetched only when a note is opened. */
 export type NoteSummary = Omit<Note, "document">;
+/** A grant of edit access to a note, for a user who has previously signed in. */
+export type NoteShare = {
+  id: string;
+  noteId: string;
+  ownerId: string;
+  ownerEmail: string;
+  sharedWithUserId: string;
+  sharedWithEmail: string;
+  createdAt: string;
+};
 export type Asset = {
   id: string;
   blob: Blob;

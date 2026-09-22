@@ -1,6 +1,12 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { descendants, safeUrl } from "../../src/model";
-import { endpoint, listModels, summarize, ocrImage } from "../../src/ai";
+import {
+  endpoint,
+  listModels,
+  summarize,
+  ocrImage,
+  translateToThai,
+} from "../../src/ai";
 import { validateDocument } from "../../src/backup";
 import { getSchema } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
@@ -161,15 +167,13 @@ describe("AI boundary", () => {
 });
 describe("OCR", () => {
   it("sends a vision payload to an OpenAI-compatible endpoint and returns the transcription", async () => {
-    const fetch = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValue(
-        new Response(
-          JSON.stringify({
-            choices: [{ message: { content: "Hello world" } }],
-          }),
-        ),
-      );
+    const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          choices: [{ message: { content: "Hello world" } }],
+        }),
+      ),
+    );
     const text = await ocrImage(
       {
         name: "test",
@@ -237,6 +241,68 @@ describe("OCR", () => {
       new AbortController().signal,
     );
     expect(text).toBe("");
+  });
+});
+describe("translate", () => {
+  it("sends the selected text and a Thai-only system prompt to an OpenAI-compatible endpoint", async () => {
+    const fetch = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(
+        new Response(
+          JSON.stringify({ choices: [{ message: { content: "สวัสดี" } }] }),
+        ),
+      );
+    const text = await translateToThai(
+      {
+        name: "test",
+        providerType: "openai",
+        baseUrl: "https://example.com/v1",
+        model: "gpt-x",
+      },
+      "secret",
+      "Hello",
+      new AbortController().signal,
+    );
+    expect(text).toBe("สวัสดี");
+    const body = JSON.parse(fetch.mock.calls[0][1]?.body as string);
+    expect(body.messages[1]).toEqual({ role: "user", content: "Hello" });
+    expect(body.messages[0].content).toContain("Thai");
+  });
+  it("dispatches to the Anthropic Messages API for Claude connections", async () => {
+    const fetch = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(
+        new Response(
+          JSON.stringify({ content: [{ type: "text", text: "สวัสดี" }] }),
+        ),
+      );
+    const text = await translateToThai(
+      {
+        name: "claude",
+        providerType: "anthropic",
+        baseUrl: "https://api.anthropic.com",
+        model: "claude-sonnet-5",
+      },
+      "secret",
+      "Hello",
+      new AbortController().signal,
+    );
+    expect(text).toBe("สวัสดี");
+    expect(fetch.mock.calls[0][0]).toBe(
+      "https://api.anthropic.com/v1/messages",
+    );
+  });
+  it("rejects an empty selection before any network call", async () => {
+    const fetch = vi.spyOn(globalThis, "fetch");
+    await expect(
+      translateToThai(
+        { name: "test", baseUrl: "https://example.com/v1", model: "x" },
+        "",
+        "   ",
+        new AbortController().signal,
+      ),
+    ).rejects.toThrow();
+    expect(fetch).not.toHaveBeenCalled();
   });
 });
 describe("untrusted imported documents", () => {

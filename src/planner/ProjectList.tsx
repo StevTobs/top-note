@@ -1,16 +1,20 @@
 import { useState } from "react";
-import { FolderKanban, Plus, Star } from "lucide-react";
+import { FolderKanban, Plus, Star, Users } from "lucide-react";
 import { reorderProject, toggleProjectFavorite } from "./db";
 import { dropOrder } from "../ordering";
-import type { Project } from "./model";
+import type { Project, ProjectShare } from "./model";
 
 export function ProjectList({
   projects,
+  mySharedProjects,
+  currentUserId,
   selectedId,
   onSelect,
   onCreate,
 }: {
   projects: Project[];
+  mySharedProjects: ProjectShare[];
+  currentUserId: string;
   selectedId: string | null;
   onSelect: (id: string) => void;
   onCreate: () => void;
@@ -61,7 +65,14 @@ export function ProjectList({
               className={`nav-item ${selectedId === p.id ? "selected" : ""}`}
               onClick={() => onSelect(p.id)}
             >
-              <FolderKanban size={16} />
+              {p.ownerId === currentUserId ? (
+                <FolderKanban size={16} />
+              ) : (
+                <Users
+                  size={16}
+                  aria-label={`แชร์โดย ${mySharedProjects.find((s) => s.projectId === p.id)?.ownerEmail || "ผู้อื่น"}`}
+                />
+              )}
               <span className="nav-item-label">{p.name}</span>
             </button>
             <button

@@ -2,6 +2,7 @@ import { useSyncExternalStore } from "react";
 import {
   type Category,
   type NoteSummary,
+  type NoteShare,
   type Preferences,
   defaults,
 } from "./model";
@@ -10,6 +11,7 @@ import type {
   Task,
   TaskDependency,
   ProjectMember,
+  ProjectShare,
 } from "./planner/model";
 
 // In-memory mirror of the signed-in user's Supabase data. Supabase is the source of
@@ -19,22 +21,26 @@ export type Snapshot = {
   notes: NoteSummary[];
   categories: Category[];
   preferences: Preferences;
+  mySharedNotes: NoteShare[];
   plannerLoaded: boolean;
   projects: Project[];
   tasks: Task[];
   dependencies: TaskDependency[];
   members: ProjectMember[];
+  mySharedProjects: ProjectShare[];
 };
 const empty = (): Snapshot => ({
   loaded: false,
   notes: [],
   categories: [],
   preferences: defaults,
+  mySharedNotes: [],
   plannerLoaded: false,
   projects: [],
   tasks: [],
   dependencies: [],
   members: [],
+  mySharedProjects: [],
 });
 let snapshot: Snapshot = empty();
 const listeners = new Set<() => void>();

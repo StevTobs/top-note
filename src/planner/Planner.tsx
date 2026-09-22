@@ -36,7 +36,15 @@ export function Planner({
   session: Session;
   onExit: () => void;
 }) {
-  const { plannerLoaded, projects, tasks, dependencies, members } = useStore();
+  const {
+    plannerLoaded,
+    projects,
+    tasks,
+    dependencies,
+    members,
+    mySharedProjects,
+  } = useStore();
+  const user = session.user;
   const [fatal, setFatal] = useState(""),
     [error, setError] = useState(""),
     [view, setView] = useState<View>("overview"),
@@ -111,6 +119,8 @@ export function Planner({
       <div className="workspace">
         <ProjectList
           projects={activeProjects}
+          mySharedProjects={mySharedProjects}
+          currentUserId={user.id}
           selectedId={selectedProjectId}
           onSelect={selectProject}
           onCreate={() => setProjectDialog({})}
@@ -145,6 +155,7 @@ export function Planner({
                     project={project}
                     tasks={tasks}
                     members={members}
+                    isOwner={project.ownerId === user.id}
                     onEdit={() => setProjectDialog({ project })}
                     onError={setError}
                   />

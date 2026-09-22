@@ -26,6 +26,7 @@ import {
   FolderKanban,
   Star,
   RefreshCw,
+  Users,
 } from "lucide-react";
 import {
   createNote,
@@ -77,7 +78,7 @@ function Workspace({
 }) {
   const user = session.user,
     displayName: string = user.user_metadata?.full_name || "My workspace";
-  const { notes, categories, preferences, loaded } = useStore();
+  const { notes, categories, preferences, mySharedNotes, loaded } = useStore();
   const [fatal, setFatal] = useState(""),
     [legacy, setLegacy] = useState<{
       counts: LegacyCounts;
@@ -762,8 +763,19 @@ function Workspace({
                   <h3>{n.title || "Untitled"}</h3>
                   <p>{n.plainText || "พื้นที่ว่างสำหรับไอเดียใหม่…"}</p>
                   <div className="note-card-category">
-                    <Folder size={12} />
-                    {categoryPath(categories, n.categoryId)}
+                    {n.ownerId === user.id ? (
+                      <>
+                        <Folder size={12} />
+                        {categoryPath(categories, n.categoryId)}
+                      </>
+                    ) : (
+                      <>
+                        <Users size={12} />
+                        แชร์โดย{" "}
+                        {mySharedNotes.find((s) => s.noteId === n.id)
+                          ?.ownerEmail || "ผู้อื่น"}
+                      </>
+                    )}
                   </div>
                 </button>
                 {trash && (
@@ -863,6 +875,7 @@ function Workspace({
             categories={categories}
             preferences={preferences}
             apiKey={apiKey}
+            isOwner={openNote.ownerId === user.id}
             onSettings={() => setSettings(true)}
             focus={focus}
             toggleFocus={() => setFocus(!focus)}

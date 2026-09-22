@@ -52,6 +52,9 @@ import {
   toggleTaskFavorite,
   deleteTask,
   addDependency,
+  shareProject,
+  unshareProject,
+  fetchProjectShares,
 } from "../../src/planner/db";
 import { getStore, resetStore } from "../../src/store";
 import type { Task } from "../../src/planner/model";
@@ -214,5 +217,67 @@ describe("planner data layer", () => {
         createdAt: "2026-01-01T00:00:00.000Z",
       },
     ]);
+  });
+});
+
+describe("sharing", () => {
+  it("shareProject resolves the invitee by email and inserts a share row", async () => {
+    rpc.mockResolvedValueOnce({ data: "user-2", error: null });
+    queue = [
+      {
+        data: {
+          id: "s1",
+          project_id: "p1",
+          owner_id: "user-1",
+          owner_email: "owner@example.com",
+          shared_with_user_id: "user-2",
+          shared_with_email: "friend@example.com",
+          created_at: "2026-01-01T00:00:00Z",
+        },
+        error: null,
+      },
+    ];
+    const share = await shareProject("p1", "friend@example.com");
+    expect(rpc).toHaveBeenCalledWith("find_user_id_by_email", {
+      p_email: "friend@example.com",
+    });
+    expect(share).toMatchObject({
+      projectId: "p1",
+      sharedWithEmail: "friend@example.com",
+    });
+  });
+  it("shareProject refuses an email that has never signed in", async () => {
+    rpc.mockResolvedValueOnce({ data: null, error: null });
+    await expect(shareProject("p1", "nobody@example.com")).rejects.toThrow(
+      "เคยเข้าสู่ระบบ",
+    );
+  });
+  it("unshareProject deletes the share row by id", async () => {
+    queue = [{ data: null, error: null }];
+    await unshareProject("s1");
+    expect(
+      calls.some((c) => c.table === "project_shares" && c.method === "delete"),
+    ).toBe(true);
+  });
+  it("fetchProjectShares lists collaborators for a project", async () => {
+    queue = [
+      {
+        data: [
+          {
+            id: "s1",
+            project_id: "p1",
+            owner_id: "user-1",
+            owner_email: "owner@example.com",
+            shared_with_user_id: "user-2",
+            shared_with_email: "friend@example.com",
+            created_at: "2026-01-01T00:00:00Z",
+          },
+        ],
+        error: null,
+      },
+    ];
+    const shares = await fetchProjectShares("p1");
+    expect(shares).toHaveLength(1);
+    expect(shares[0]).toMatchObject({ sharedWithEmail: "friend@example.com" });
   });
 });

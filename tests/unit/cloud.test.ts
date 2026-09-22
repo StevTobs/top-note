@@ -56,6 +56,9 @@ import {
   toggleCategoryFavorite,
   deleteCategory,
   permanentlyDeleteNote,
+  shareNote,
+  unshareNote,
+  fetchNoteShares,
   toSummary,
   noteRow,
   toCategory,
@@ -287,6 +290,85 @@ describe("cloud persistence", () => {
     await permanentlyDeleteNote("n1");
     expect(getStore().notes).toEqual([]);
     expect(remove).toHaveBeenCalledWith(["user-1/img-1"]);
+  });
+});
+
+describe("sharing", () => {
+  it("shareNote resolves the invitee by email and inserts a share row", async () => {
+    rpc.mockResolvedValueOnce({ data: "user-2", error: null });
+    queue = [
+      {
+        data: {
+          id: "s1",
+          note_id: "n1",
+          owner_id: "user-1",
+          owner_email: "owner@example.com",
+          shared_with_user_id: "user-2",
+          shared_with_email: "friend@example.com",
+          created_at: "2026-01-01T00:00:00Z",
+        },
+        error: null,
+      },
+    ];
+    const share = await shareNote("n1", "friend@example.com");
+    expect(rpc).toHaveBeenCalledWith("find_user_id_by_email", {
+      p_email: "friend@example.com",
+    });
+    expect(share).toMatchObject({
+      noteId: "n1",
+      ownerEmail: "owner@example.com",
+      sharedWithEmail: "friend@example.com",
+    });
+    const insert = calls.find(
+      (c) => c.table === "note_shares" && c.method === "insert",
+    )!.args[0] as Record<string, unknown>;
+    // owner_id/owner_email/shared_with_email are never sent from the client: owner_id
+    // defaults to auth.uid() and a server-side trigger fills both emails from auth.users.
+    expect(insert).toEqual({
+      id: expect.any(String),
+      note_id: "n1",
+      shared_with_user_id: "user-2",
+    });
+  });
+  it("shareNote refuses an email that has never signed in", async () => {
+    rpc.mockResolvedValueOnce({ data: null, error: null });
+    await expect(shareNote("n1", "nobody@example.com")).rejects.toThrow(
+      "เคยเข้าสู่ระบบ",
+    );
+  });
+  it("shareNote refuses sharing with yourself", async () => {
+    rpc.mockResolvedValueOnce({ data: "user-1", error: null }); // resolves to the caller's own id
+    await expect(shareNote("n1", "owner@example.com")).rejects.toThrow(
+      "ตัวเอง",
+    );
+  });
+  it("unshareNote deletes the share row by id", async () => {
+    queue = [{ data: null, error: null }];
+    await unshareNote("s1");
+    expect(
+      calls.some((c) => c.table === "note_shares" && c.method === "delete"),
+    ).toBe(true);
+  });
+  it("fetchNoteShares lists collaborators for a note", async () => {
+    queue = [
+      {
+        data: [
+          {
+            id: "s1",
+            note_id: "n1",
+            owner_id: "user-1",
+            owner_email: "owner@example.com",
+            shared_with_user_id: "user-2",
+            shared_with_email: "friend@example.com",
+            created_at: "2026-01-01T00:00:00Z",
+          },
+        ],
+        error: null,
+      },
+    ];
+    const shares = await fetchNoteShares("n1");
+    expect(shares).toHaveLength(1);
+    expect(shares[0]).toMatchObject({ sharedWithEmail: "friend@example.com" });
   });
 });
 

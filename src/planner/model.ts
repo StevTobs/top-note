@@ -8,6 +8,7 @@ export const PROJECT_STATUSES: ProjectStatus[] = [
 ];
 export type Project = {
   id: string;
+  ownerId: string;
   name: string;
   description: string;
   startDate: string | null; // "YYYY-MM-DD"
@@ -19,6 +20,16 @@ export type Project = {
   createdAt: string;
   updatedAt: string;
   deletedAt: string | null;
+};
+/** A grant of edit access to a project (and its tasks), for a user who has previously signed in. */
+export type ProjectShare = {
+  id: string;
+  projectId: string;
+  ownerId: string;
+  ownerEmail: string;
+  sharedWithUserId: string;
+  sharedWithEmail: string;
+  createdAt: string;
 };
 
 export type TaskKind = "task" | "milestone";

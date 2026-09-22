@@ -29,11 +29,16 @@ import {
   Minus,
   QrCode,
   ScanText,
+  Share2,
+  UserPlus,
+  UserX,
+  Languages,
 } from "lucide-react";
 import {
   type Note,
   type Category,
   type Preferences,
+  type NoteShare,
   uid,
   now,
   textOf,
@@ -41,11 +46,17 @@ import {
   categoryPath,
   safeUrl,
 } from "../model";
-import { fetchNote, saveNote } from "../db";
+import {
+  fetchNote,
+  saveNote,
+  shareNote,
+  unshareNote,
+  fetchNoteShares,
+} from "../db";
 import { uploadImage } from "../assets";
 import { documentExtensions } from "../editor/schema";
 import { type Scope, captureScope, signature } from "../editor/scope";
-import { summarize, ocrImage } from "../ai";
+import { summarize, ocrImage, translateToThai } from "../ai";
 import { validateImageFile, decodeQRFromFile, fileToDataUrl } from "../scan";
 import { download, exportMarkdown } from "../backup";
 import { Modal } from "./Modal";
@@ -58,6 +69,8 @@ type Props = {
   categories: Category[];
   preferences: Preferences;
   apiKey: string;
+  /** Whether the signed-in account owns this note (vs. having edit access via a share). */
+  isOwner: boolean;
   onSettings: () => void;
   focus: boolean;
   toggleFocus: () => void;
@@ -72,6 +85,7 @@ export function NoteEditor({
   categories,
   preferences,
   apiKey,
+  isOwner,
   onSettings,
   focus,
   toggleFocus,
@@ -101,7 +115,16 @@ export function NoteEditor({
     [scanMode, setScanMode] = useState<"qr" | "ocr" | null>(null),
     [scanBusy, setScanBusy] = useState(false),
     [scanError, setScanError] = useState(""),
-    [scanResult, setScanResult] = useState("");
+    [scanResult, setScanResult] = useState(""),
+    [shareOpen, setShareOpen] = useState(false),
+    [shares, setShares] = useState<NoteShare[]>([]),
+    [shareBusy, setShareBusy] = useState(false),
+    [shareError, setShareError] = useState(""),
+    [inviteEmail, setInviteEmail] = useState(""),
+    [translateOpen, setTranslateOpen] = useState(false),
+    [translateBusy, setTranslateBusy] = useState(false),
+    [translateError, setTranslateError] = useState(""),
+    [translateResult, setTranslateResult] = useState("");
   const draft = useRef(note),
     dirty = useRef(false),
     generation = useRef(0),
@@ -116,7 +139,8 @@ export function NoteEditor({
     fileRef = useRef<HTMLInputElement>(null),
     scanFileRef = useRef<HTMLInputElement>(null),
     editorRef = useRef<ReturnType<typeof useEditor>>(null),
-    generationAI = useRef(0);
+    generationAI = useRef(0),
+    translateRange = useRef<{ from: number; to: number } | null>(null);
   const callbacks = useRef({ onError, onSaveStatus });
   callbacks.current = { onError, onSaveStatus };
 
@@ -297,6 +321,86 @@ export function NoteEditor({
       current.chain().focus().insertContentAt(pos, paragraphs).run();
     }
     closeScan();
+  }
+  function openShare() {
+    setShareOpen(true);
+    setShareError("");
+    setInviteEmail("");
+    fetchNoteShares(note.id)
+      .then(setShares)
+      .catch((e) =>
+        setShareError(e instanceof Error ? e.message : "โหลดรายชื่อไม่สำเร็จ"),
+      );
+  }
+  async function addCollaborator(e: React.FormEvent) {
+    e.preventDefault();
+    if (!inviteEmail.trim()) return;
+    setShareBusy(true);
+    setShareError("");
+    try {
+      const share = await shareNote(note.id, inviteEmail.trim());
+      setShares((prev) => [...prev, share]);
+      setInviteEmail("");
+    } catch (e) {
+      setShareError(e instanceof Error ? e.message : "แชร์โน้ตไม่สำเร็จ");
+    } finally {
+      setShareBusy(false);
+    }
+  }
+  async function removeCollaborator(shareId: string) {
+    setShareBusy(true);
+    setShareError("");
+    try {
+      await unshareNote(shareId);
+      setShares((prev) => prev.filter((s) => s.id !== shareId));
+    } catch (e) {
+      setShareError(e instanceof Error ? e.message : "ยกเลิกการแชร์ไม่สำเร็จ");
+    } finally {
+      setShareBusy(false);
+    }
+  }
+  function closeTranslate() {
+    setTranslateOpen(false);
+    setTranslateResult("");
+    setTranslateError("");
+    translateRange.current = null;
+  }
+  function openTranslate() {
+    const current = editorRef.current;
+    if (!current || current.state.selection.empty) return;
+    const { from, to } = current.state.selection;
+    translateRange.current = { from, to };
+    setTranslateOpen(true);
+    setTranslateResult("");
+    setTranslateError("");
+    if (!preferences.connection.baseUrl) return;
+    const text = current.state.doc.textBetween(from, to, "\n");
+    setTranslateBusy(true);
+    translateToThai(
+      preferences.connection,
+      apiKey,
+      text,
+      new AbortController().signal,
+    )
+      .then(setTranslateResult)
+      .catch((e) =>
+        setTranslateError(e instanceof Error ? e.message : "แปลไม่สำเร็จ"),
+      )
+      .finally(() => setTranslateBusy(false));
+  }
+  function replaceWithTranslation() {
+    const current = editorRef.current;
+    const range = translateRange.current;
+    if (!current || !range || !translateResult || !writableRef.current) return;
+    current
+      .chain()
+      .focus()
+      .command(({ tr }) => {
+        tr.insertText(translateResult, range.from, range.to);
+        return true;
+      })
+      .run();
+    closeTranslate();
   }
   const editor = useEditor({
     extensions: [
@@ -721,6 +825,16 @@ export function NoteEditor({
             >
               <ListTree size={18} />
             </button>
+            {isOwner && (
+              <button
+                className="icon-button"
+                aria-label="แชร์โน้ต"
+                title="แชร์โน้ตให้คนที่เคยเข้าสู่ระบบมาก่อน"
+                onClick={openShare}
+              >
+                <Share2 size={17} />
+              </button>
+            )}
             <button
               className="icon-button"
               aria-label="ส่งออก Markdown"
@@ -907,6 +1021,16 @@ export function NoteEditor({
           >
             <Sparkles size={15} />
             สรุปส่วนนี้
+          </button>
+          <button
+            className="ai-trigger"
+            disabled={!writable || !editor || editor.state.selection.empty}
+            title="แปลข้อความที่เลือกเป็นภาษาไทย"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={openTranslate}
+          >
+            <Languages size={15} />
+            แปลเป็นไทย
           </button>
         </div>
         <input
@@ -1392,6 +1516,119 @@ export function NoteEditor({
                 onClick={insertScanResult}
               >
                 {scanMode === "qr" ? "แทรกลิงก์" : "แทรกในโน้ต"}
+              </button>
+            </div>
+          )}
+        </Modal>
+      )}
+      {shareOpen && (
+        <Modal
+          title="แชร์โน้ต"
+          onClose={() => {
+            if (!shareBusy) setShareOpen(false);
+          }}
+        >
+          <div className="settings-body">
+            <p className="muted small">
+              เพิ่มได้เฉพาะคนที่เคยเข้าสู่ระบบ Top Note มาก่อน
+              ผู้ถูกเชิญจะแก้ไขและเพิ่มเนื้อหาในโน้ตนี้ได้เต็มที่
+            </p>
+            <div className="dependency-chips">
+              {shares.map((s) => (
+                <span key={s.id} className="dependency-chip">
+                  {s.sharedWithEmail}
+                  <button
+                    type="button"
+                    className="icon-button"
+                    aria-label={`เลิกแชร์กับ ${s.sharedWithEmail}`}
+                    disabled={shareBusy}
+                    onClick={() => void removeCollaborator(s.id)}
+                  >
+                    <UserX size={12} />
+                  </button>
+                </span>
+              ))}
+              {!shares.length && (
+                <small className="muted">ยังไม่ได้แชร์ให้ใคร</small>
+              )}
+            </div>
+            <form
+              className="field-row member-add-row"
+              onSubmit={addCollaborator}
+            >
+              <input
+                type="email"
+                placeholder="อีเมลของผู้ที่ต้องการแชร์ให้"
+                value={inviteEmail}
+                onChange={(e) => setInviteEmail(e.target.value)}
+              />
+              <button type="submit" disabled={shareBusy || !inviteEmail.trim()}>
+                <UserPlus size={14} />
+                เพิ่ม
+              </button>
+            </form>
+            {shareError && (
+              <p role="alert" className="error">
+                {shareError}
+              </p>
+            )}
+          </div>
+        </Modal>
+      )}
+      {translateOpen && (
+        <Modal title="แปลเป็นไทย" onClose={closeTranslate}>
+          <div className="settings-body">
+            {!preferences.connection.baseUrl ? (
+              <div className="notice column">
+                เชื่อมต่อ API เพื่อเริ่มใช้ AI
+                <button type="button" onClick={onSettings}>
+                  ตั้งค่า AI connection
+                </button>
+              </div>
+            ) : (
+              <>
+                {translateBusy && <p role="status">กำลังแปล…</p>}
+                {translateResult && (
+                  <div className="ai-result">
+                    <div className="section-kicker">คำแปลภาษาไทย</div>
+                    <textarea
+                      rows={6}
+                      value={translateResult}
+                      onChange={(e) => setTranslateResult(e.target.value)}
+                    />
+                  </div>
+                )}
+              </>
+            )}
+            {translateError && (
+              <p role="alert" className="error">
+                {translateError}
+              </p>
+            )}
+          </div>
+          {translateResult && (
+            <div className="modal-footer">
+              <button
+                type="button"
+                onClick={() =>
+                  navigator.clipboard
+                    .writeText(translateResult)
+                    .catch(() =>
+                      setTranslateError(
+                        "คัดลอกไม่ได้ กรุณาเลือกข้อความแล้วคัดลอกเอง",
+                      ),
+                    )
+                }
+              >
+                <Copy size={15} />
+                คัดลอก
+              </button>
+              <button
+                className="primary"
+                disabled={!writable}
+                onClick={replaceWithTranslation}
+              >
+                แทนที่ข้อความที่เลือก
               </button>
             </div>
           )}
