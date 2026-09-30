@@ -436,15 +436,20 @@ export function NoteEditor({
         }
         return false;
       },
-      handleClick: (_view, _pos, event) => {
-        const a = (event.target as HTMLElement).closest("a");
-        if (a && (event.ctrlKey || event.metaKey)) {
+      handleDOMEvents: {
+        // Native click (not ProseMirror's handleClick) so this works in read-only mode too and
+        // can suppress the browser's own navigation, which would otherwise open a second tab.
+        click: (_view, event) => {
+          const a = (event.target as HTMLElement).closest("a");
+          if (!a) return false;
+          event.preventDefault();
+          // A drag that ends inside a link is a selection (e.g. to edit it), not a click.
+          if (!window.getSelection()?.isCollapsed) return true;
           const href = a.getAttribute("href");
           if (href && safeUrl(href))
             window.open(href, "_blank", "noopener,noreferrer");
           return true;
-        }
-        return false;
+        },
       },
     },
     onUpdate: ({ editor: e }) => {
@@ -947,7 +952,7 @@ export function NoteEditor({
           <button
             className="icon-button"
             aria-label="เพิ่มหรือแก้ไขลิงก์"
-            title="เพิ่มลิงก์ · Ctrl+คลิกเพื่อเปิด"
+            title="เพิ่มลิงก์ · คลิกลิงก์เพื่อเปิด"
             disabled={!writable}
             onMouseDown={(e) => e.preventDefault()}
             onClick={() => {
@@ -1408,7 +1413,8 @@ export function NoteEditor({
                 />
               </label>
               <p className="muted small">
-                Ctrl หรือ ⌘ + คลิกลิงก์ในโน้ตเพื่อเปิด
+                คลิกลิงก์ในโน้ตเพื่อเปิดในแท็บใหม่
+                (ลากเลือกข้อความลิงก์เพื่อแก้ไข)
               </p>
             </div>
             <div className="modal-footer">
